@@ -1,12 +1,15 @@
 import os
 import sys
-import sqlite3
+import json
 import asyncio
 import datetime
 import logging
+import requests
 from dotenv import load_dotenv
 from google import genai
 from telegram import Bot
+
+__version__ = "1.0.0"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -17,62 +20,101 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(BASE_DIR, "..", "db", "brain.db")
 
-if "projects/local" in BASE_DIR:
-    env_filename = ".second_brain_dev.env"
+if "projects/" in BASE_DIR:
+    RUN_MODE = "DEV 🔧"
+    env_filename = ".third_brain_dev.env"
 else:
-    env_filename = ".second_brain.env"
-load_dotenv(os.path.expanduser(f"~/{env_filename}"))
+    RUN_MODE = "PROD 🚀"
+    env_filename = ".third_brain.env"
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-CHAT_ID = os.environ.get("TELEGRAM_BOT_CHAT_ID") 
+env_path = os.path.expanduser(f"~/{env_filename}")
+load_dotenv(env_path)
 
-if not CHAT_ID:
-    logger.error("TELEGRAM_BOT_CHAT_ID is missing in .env")
-    exit(1)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_BOT_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# --- 1. Fetch Open Loops ---
+if not all([TELEGRAM_TOKEN, CHAT_ID, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    logger.error("Missing required environment variables.")
+    sys.exit(1)
+
+config_path = os.path.join(BASE_DIR, "config.json")
+try:
+    with open(config_path, "r") as f:
+        config = json.load(f)
+        rag_model_name = config["llm_models"]["rag"]
+except (FileNotFoundError, KeyError, json.JSONDecodeError):
+    rag_model_name = "gemini-2.5-flash"
+
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options={'timeout': 60.0}
+)
+
 def get_open_items():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    """Fetches items with status 'New' from Supabase and filters by date."""
+    url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&metadata->>status=eq.New"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     
-    # Logic:
-    # 1. Status is 'New'
-    # 2. Date is NULL (Backlog) OR Date is <= Today + 7 Days
-    # 3. Sort by Date ASC (Overdue first), then ID
-    c.execute('''
-        SELECT id, type, summary, target_date 
-        FROM entries 
-        WHERE status = 'New' 
-        AND (target_date IS NULL OR target_date <= date('now', '+7 days', 'localtime'))
-        ORDER BY 
-            CASE WHEN target_date IS NULL THEN 1 ELSE 0 END, 
-            target_date ASC, 
-            id DESC
-        LIMIT 50
-    ''')
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch from Supabase: {e}")
+        return []
 
-# --- 2. Generate Briefing ---
+    today = datetime.date.today()
+    limit_date = today + datetime.timedelta(days=7)
+    
+    filtered_rows = []
+    for row in rows:
+        meta = row.get("metadata", {})
+        type_ = meta.get("type", "Idea")
+        
+        if type_ not in ["Task", "Project", "Admin"]:
+            continue
+            
+        t_date_str = meta.get("target_date")
+        include = False
+        
+        if not t_date_str:
+            include = True
+        else:
+            try:
+                t_date = datetime.date.fromisoformat(t_date_str)
+                if t_date <= limit_date:
+                    include = True
+            except ValueError:
+                include = True 
+                
+        if include:
+            filtered_rows.append(row)
+            
+    return filtered_rows
+
 def create_briefing_content(rows):
     if not rows:
-        return "No active items in the Second Brain. All clear!"
+        return "No active items in the Third Brain. All clear!"
 
-    client = genai.Client(api_key=GEMINI_KEY)
-    
-    # Get Today's Date for the AI context
     today_str = datetime.date.today().isoformat()
     
-    # Format data for the LLM
     data_list = []
     for row in rows:
-        date_info = f"[Target: {row['target_date']}]" if row['target_date'] else "[No Date]"
-        data_list.append(f"- {date_info} {row['type']}: {row['summary']} (ID: {row['id']})")
+        meta = row.get("metadata", {})
+        t_date = meta.get("target_date")
+        date_info = f"[Target: {t_date}]" if t_date else "[No Date]"
+        type_ = meta.get("type", "Task")
+        
+        summary = row.get("content", "").split("\n")[0][:100]
+        
+        data_list.append(f"- {date_info} {type_}: {summary} (ID: {row['id']})")
     
     data_text = "\n".join(data_list)
     
@@ -94,32 +136,28 @@ def create_briefing_content(rows):
     """
     
     response = client.models.generate_content(
-        model="gemini-3-flash-preview",
+        model=rag_model_name,
         contents=prompt
     )
     return response.text
 
-# --- 3. Send to Telegram ---
 async def send_briefing():
     rows = get_open_items()
     
-    # Only run AI if there is actual data
     if len(rows) > 0:
         message = create_briefing_content(rows)
     else:
         message = "🌅 Morning! Zero open loops for the week. Have a great day."
 
-    bot = Bot(BOT_TOKEN)
+    bot = Bot(TELEGRAM_TOKEN)
     await bot.send_message(
         chat_id=CHAT_ID, 
         text=message, 
         read_timeout=30.0,
-        connect_timeout=30.0)
+        connect_timeout=30.0
+    )
     logger.info("Briefing sent.")
 
 if __name__ == '__main__':
-    if not BOT_TOKEN or not GEMINI_KEY:
-        logger.error("Env vars missing.")
-        exit(1)
-        
+    logger.info(f"Starting Third Brain Briefing v{__version__} [{RUN_MODE}]...")
     asyncio.run(send_briefing())

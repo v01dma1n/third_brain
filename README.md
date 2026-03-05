@@ -1,6 +1,8 @@
-# 🧠 Second Brain Bot
+# 🧠 Third Brain Bot
 
-> **Vibe Coded** based on the [Second Brain philosophy by Nate B. Jones](https://natebjones.substack.com/).
+> **Vibe Coded** based on the [Second Brain philosophy by Nate B. Jones](https://natebjones.substack.com/) and [Open Brain also by Nate B. Jones](https://natebjones.substack.com/).
+
+# ToDo: update me!
 
 A frictionless capture system that uses AI to organize your life. This Telegram bot acts as the interface to your Second Brain, separating the act of **capturing** ideas from the mental load of **organizing** them.
 

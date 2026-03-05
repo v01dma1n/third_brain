@@ -1,0 +1,5 @@
+substack/
+tmp/
+*.db
+*.code-workspace
+*.*~

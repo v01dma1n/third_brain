@@ -1,0 +1,75 @@
+digraph SecondBrain {
+    # --- Global Styling ---
+    # Increased separation values to prevent line overlap
+    rankdir=TB;
+    nodesep=1.2; 
+    ranksep=1.0; 
+    splines=ortho; 
+    compound=true; # Helps with routing lines between clusters
+    
+    node [fontname="Arial", shape=box, style=filled, fillcolor="#ffffff", penwidth=1.5, margin=0.3];
+    edge [fontname="Arial", fontsize=10, penwidth=1.2];
+
+    # --- Nodes & Clusters ---
+
+    # User Zone
+    subgraph cluster_user {
+        label="User Interface";
+        style=dashed; color="#555555"; fontcolor="#555555";
+        margin=20;
+        
+        User [shape=ellipse, fillcolor="#e1f5fe", label="User\n(You)"];
+        TG_App [fillcolor="#b3e5fc", label="Telegram App\n(Mobile)"];
+        Streamlit [fillcolor="#fff9c4", label="Streamlit Dashboard\n(Browser)"];
+    }
+
+    # Cloud Zone
+    subgraph cluster_cloud {
+        label="External Cloud APIs";
+        style=dashed; color="#555555"; fontcolor="#555555";
+        margin=20;
+        
+        TG_API [fillcolor="#c8e6c9", label="Telegram API"];
+        Gemini [fillcolor="#e1bee7", label="Google Gemini\n(2.0 Flash)"];
+    }
+
+    # Local Server Zone
+    subgraph cluster_local {
+        label="Local Linux Server (Home)";
+        style=filled; color="#f5f5f5";
+        margin=20;
+        
+        # Core Scripts
+        Bot [fillcolor="#ffccbc", label="telegram_listener.py\n(Polling Service)"];
+        Briefing [fillcolor="#ffccbc", label="briefing.py\n(Cron Job)"];
+        
+        # Database
+        DB [shape=cylinder, fillcolor="#ffe0b2", label="brain.db\n(SQLite)", height=1.5];
+    }
+
+    # --- Relationships ---
+
+    # 1. Capture & Bot Flow
+    User -> TG_App [label="Voice/Text"];
+    TG_App -> TG_API [label="Message"];
+    TG_API -> Bot [dir=both, label="Polling / Reply"]; 
+    
+    # 2. Intelligence Flow
+    Bot -> Gemini [dir=both, label="Prompt <-> JSON"];
+    
+    # 3. Database Interactions
+    Bot -> DB [label="Read Context\n& Save Entry"];
+    Briefing -> DB [label="Read Open Loops"];
+    
+    # 4. Output Flow
+    Briefing -> TG_API [label="Send Digest"];
+    
+    # 5. Management Flow
+    User -> Streamlit [label="Review/Edit", style=dashed];
+    Streamlit -> DB [label="Direct CRUD", dir=both];
+
+    # --- Layout Helpers (Invisible) ---
+    # Forces User and Cloud to be on the same level, keeping the graph wide
+    {rank=same; User; TG_API}
+    {rank=same; Bot; Briefing}
+}

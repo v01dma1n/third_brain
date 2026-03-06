@@ -55,49 +55,31 @@ client = genai.Client(
 )
 
 def get_open_items():
-    """Fetches items with status 'New' from Supabase and filters by date."""
-    url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&metadata->>status=eq.New"
+    today = datetime.date.today()
+    limit_date = today + datetime.timedelta(days=7)
+    limit_date_str = limit_date.isoformat()
+
+    url = f"{SUPABASE_URL}/rest/v1/thoughts"
+    
+    params = {
+        "select": "id,content,metadata",
+        "metadata->>status": "eq.New",
+        "metadata->>type": "in.(Task,Project,Admin)",
+        "or": f"(metadata->>target_date.is.null,metadata->>target_date.lte.{limit_date_str})"
+    }
+    
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
-        rows = response.json()
+        return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch from Supabase: {e}")
         return []
-
-    today = datetime.date.today()
-    limit_date = today + datetime.timedelta(days=7)
-    
-    filtered_rows = []
-    for row in rows:
-        meta = row.get("metadata", {})
-        type_ = meta.get("type", "Idea")
-        
-        if type_ not in ["Task", "Project", "Admin"]:
-            continue
-            
-        t_date_str = meta.get("target_date")
-        include = False
-        
-        if not t_date_str:
-            include = True
-        else:
-            try:
-                t_date = datetime.date.fromisoformat(t_date_str)
-                if t_date <= limit_date:
-                    include = True
-            except ValueError:
-                include = True 
-                
-        if include:
-            filtered_rows.append(row)
-            
-    return filtered_rows
 
 async def create_briefing_content(rows):
     if not rows:

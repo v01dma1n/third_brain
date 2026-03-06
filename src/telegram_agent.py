@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -21,8 +21,19 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(BASE_DIR, "..", "config.json")
 
-if "projects/" in BASE_DIR:
+try:
+    with open(config_path, "r") as f:
+        config = json.load(f)
+        app_env = config.get("environment", "PROD").upper()
+        rag_model_name = config["llm_models"]["rag"]
+        classification_model_name = config["llm_models"]["classification"]
+except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
+    logger.error(f"Failed to load config.json: {e}")
+    sys.exit(1)
+
+if app_env == "DEV":
     RUN_MODE = "DEV 🔧"
     env_filename = ".third_brain_dev.env"
 else:
@@ -41,16 +52,6 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 if not all([TELEGRAM_TOKEN, SUPABASE_URL, SUPABASE_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY]):
     logger.error("Missing required environment variables.")
-    sys.exit(1)
-
-config_path = os.path.join(BASE_DIR, "..", "config.json")
-try:
-    with open(config_path, "r") as f:
-        config = json.load(f)
-        rag_model_name = config["llm_models"]["rag"]
-        classification_model_name = config["llm_models"]["classification"]
-except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-    logger.error(f"Failed to load models from config.json: {e}")
     sys.exit(1)
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -144,8 +145,7 @@ def update_thought(thought_id: str, new_status: str) -> dict:
 system_instruction = """
 You are the Third Brain retrieval agent. 
 Use your tools to query the Supabase database to answer user questions.
-If a user asks to mark a task as done or update a status, use the update_thought.
-Always summarize returned JSON data clearly.
+If a user asks to mark a task as done or update a status, use the search_thoughts tool to find the exact database ID first, then execute the update_thought tool.
 """
 
 agent_config = types.GenerateContentConfig(
@@ -156,11 +156,13 @@ agent_config = types.GenerateContentConfig(
 def extract_metadata(text: str) -> dict:
     prompt = f"""Extract metadata for the following text.
     Return ONLY a valid JSON object with this exact schema:
-    {{"type": "Task|Project|Idea", "domain": "Work|Home", "topics": ["tag1", "tag2"], 
-    "status": "New", "target_date": "YYYY-MM-DD or null"}}
+    {{"type": "Task|Project|Idea", "domain": "Work|Home", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
     Text: {text}"""
     try:
-        response = client.models.generate_content(model=classification_model_name, contents=prompt)
+        response = client.models.generate_content(
+            model=classification_model_name, 
+            contents=prompt
+        )
         cleaned_text = response.text.strip().strip('```json').strip('```').strip()
         data = json.loads(cleaned_text)
         if "status" not in data:
@@ -220,10 +222,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = transcription_resp.text.strip()
         logger.info(f"Transcribed voice: {text}")
 
-    prompt = f"""Classify the following message as 'INGESTION' (storing a fact, idea, or task) 
-              or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). 
-              Message: '{text}'"""
-    route_resp = await asyncio.to_thread(client.models.generate_content, model=classification_model_name, contents=prompt)
+    prompt = f"Classify the following message as 'INGESTION' (storing a fact, idea, or task) or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). Message: '{text}'"
+    route_resp = await asyncio.to_thread(
+        client.models.generate_content, 
+        model=classification_model_name, 
+        contents=prompt
+    )
     intent = route_resp.text.strip().upper()
     
     if "INGESTION" in intent:
@@ -235,7 +239,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Routing to Retrieval pipeline.")
         try:
             chat = client.chats.create(model=rag_model_name, config=agent_config)
-            response = await asyncio.to_thread(chat.send_message, text)
+            response = await asyncio.to_thread(chat.send_message, message=text)
             await msg.reply_text(response.text)
         except Exception as e:
             logger.error(f"Retrieval error: {e}")

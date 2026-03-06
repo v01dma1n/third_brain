@@ -1,4 +1,5 @@
 {
+  "environment": "DEV",
   "llm_models": {
     "rag": "gemini-3-flash-preview",
     "classification": "gemini-2.0-flash"

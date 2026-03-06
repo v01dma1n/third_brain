@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from google import genai
 from telegram import Bot
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,8 +20,18 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(BASE_DIR, "..", "config.json")
 
-if "projects/" in BASE_DIR:
+try:
+    with open(config_path, "r") as f:
+        config = json.load(f)
+        app_env = config.get("environment", "PROD").upper()
+        rag_model_name = config["llm_models"]["rag"]
+except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
+    logger.error(f"Failed to load config.json: {e}")
+    sys.exit(1)
+
+if app_env == "DEV":
     RUN_MODE = "DEV 🔧"
     env_filename = ".third_brain_dev.env"
 else:
@@ -29,6 +39,7 @@ else:
     env_filename = ".third_brain.env"
 
 env_path = os.path.expanduser(f"~/{env_filename}")
+logger.info(f"Loading {RUN_MODE} config from: {env_path}")
 load_dotenv(env_path)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -40,14 +51,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 if not all([TELEGRAM_TOKEN, CHAT_ID, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     logger.error("Missing required environment variables.")
     sys.exit(1)
-
-config_path = os.path.join(BASE_DIR, "config.json")
-try:
-    with open(config_path, "r") as f:
-        config = json.load(f)
-        rag_model_name = config["llm_models"]["rag"]
-except (FileNotFoundError, KeyError, json.JSONDecodeError):
-    rag_model_name = "gemini-2.5-flash"
 
 client = genai.Client(
     api_key=GEMINI_API_KEY,
@@ -85,14 +88,20 @@ async def create_briefing_content(rows):
     if not rows:
         return "No active items in the Third Brain. All clear!"
 
-    today_str = datetime.date.today().isoformat()
+    today = datetime.date.today()
+    today_str = today.isoformat()
+    next_week_str = (today + datetime.timedelta(days=7)).isoformat()
     
     data_list = []
     for row in rows:
         meta = row.get("metadata", {})
-        t_date = meta.get("target_date")
-        date_info = f"[Target: {t_date}]" if t_date else "[No Date]"
         type_ = meta.get("type", "Task")
+        t_date = meta.get("target_date")
+        
+        if type_ == "Task" and not t_date:
+            t_date = next_week_str
+            
+        date_info = f"[Target: {t_date}]" if t_date else "[No Date]"
         
         summary = row.get("content", "").split("\n")[0][:100]
         

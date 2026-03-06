@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from google import genai
 from telegram import Bot
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -96,7 +96,7 @@ async def create_briefing_content(rows):
         
         summary = row.get("content", "").split("\n")[0][:100]
         
-        data_list.append(f"- {date_info} {type_}: {summary} (ID: {row['id']})")
+        data_list.append(f"- {date_info} {type_}: {summary}")
     
     data_text = "\n".join(data_list)
     

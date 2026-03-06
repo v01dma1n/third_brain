@@ -113,7 +113,7 @@ def list_thoughts(limit: int = 5) -> dict:
         logger.error(f"list_thoughts failed: {e}")
         return {"error": str(e)}
 
-def update_thought(thought_id: int, new_status: str) -> dict:
+def update_thought(thought_id: str, new_status: str) -> dict:
     """Updates the status (e.g., 'Done', 'New', 'Review') of a specific thought by its ID."""
     get_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}&select=metadata"
     headers = {
@@ -144,8 +144,8 @@ def update_thought(thought_id: int, new_status: str) -> dict:
 system_instruction = """
 You are the Third Brain retrieval agent. 
 Use your tools to query the Supabase database to answer user questions.
-If a user asks to mark a task as done or update a status, use the update_thought tool and require the ID.
-Always summarize returned JSON data clearly and output the database IDs so the user can reference them.
+If a user asks to mark a task as done or update a status, use the update_thought.
+Always summarize returned JSON data clearly.
 """
 
 agent_config = types.GenerateContentConfig(
@@ -156,7 +156,8 @@ agent_config = types.GenerateContentConfig(
 def extract_metadata(text: str) -> dict:
     prompt = f"""Extract metadata for the following text.
     Return ONLY a valid JSON object with this exact schema:
-    {{"type": "Task|Project|Idea", "domain": "Work|Home", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
+    {{"type": "Task|Project|Idea", "domain": "Work|Home", "topics": ["tag1", "tag2"], 
+    "status": "New", "target_date": "YYYY-MM-DD or null"}}
     Text: {text}"""
     try:
         response = client.models.generate_content(model=classification_model_name, contents=prompt)
@@ -219,7 +220,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = transcription_resp.text.strip()
         logger.info(f"Transcribed voice: {text}")
 
-    prompt = f"Classify the following message as 'INGESTION' (storing a fact, idea, or task) or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). Message: '{text}'"
+    prompt = f"""Classify the following message as 'INGESTION' (storing a fact, idea, or task) 
+              or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). 
+              Message: '{text}'"""
     route_resp = await asyncio.to_thread(client.models.generate_content, model=classification_model_name, contents=prompt)
     intent = route_resp.text.strip().upper()
     

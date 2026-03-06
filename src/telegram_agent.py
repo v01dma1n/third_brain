@@ -4,13 +4,14 @@ import json
 import logging
 import requests
 import asyncio
+import datetime
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.2.0"
+__version__ = "1.3.1"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -29,6 +30,7 @@ try:
         app_env = config.get("environment", "PROD").upper()
         rag_model_name = config["llm_models"]["rag"]
         classification_model_name = config["llm_models"]["classification"]
+        domain_config = config.get("domains", {"Work": [], "Home": []})
 except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
     logger.error(f"Failed to load config.json: {e}")
     sys.exit(1)
@@ -76,12 +78,11 @@ def get_embedding(text: str) -> list:
         return []
 
 def search_thoughts(query_text: str) -> dict:
-    """Searches the database for thoughts matching the query text semantically."""
     embedding = get_embedding(query_text)
     if not embedding:
         return {"error": "Failed to generate vector embedding for search."}
 
-    url = f"{SUPABASE_URL}/rest/v1/rpc/match_thoughts"
+    url = f"{SUPABASE_URL}/rest/v1/rpc/query_thoughts"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -99,7 +100,6 @@ def search_thoughts(query_text: str) -> dict:
         return {"error": str(e)}
 
 def list_thoughts(limit: int = 5) -> dict:
-    """Retrieves the most recent thoughts saved in the database."""
     url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&order=created_at.desc&limit={limit}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -115,7 +115,6 @@ def list_thoughts(limit: int = 5) -> dict:
         return {"error": str(e)}
 
 def update_thought(thought_id: str, new_status: str) -> dict:
-    """Updates the status (e.g., 'Done', 'New', 'Review') of a specific thought by its ID."""
     get_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}&select=metadata"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -154,10 +153,26 @@ agent_config = types.GenerateContentConfig(
 )
 
 def extract_metadata(text: str) -> dict:
+    today = datetime.date.today()
+    next_week = today + datetime.timedelta(days=7)
+    
+    domain_keys = "|".join(domain_config.keys())
+    domain_rules = "\n    ".join([f"- Map items mentioning {', '.join(keywords)} to '{domain}'." for domain, keywords in domain_config.items() if keywords])
+    
     prompt = f"""Extract metadata for the following text.
+    TODAY IS: {today.isoformat()}
+    
     Return ONLY a valid JSON object with this exact schema:
-    {{"type": "Task|Project|Idea", "domain": "Work|Home", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
+    {{"type": "Task|Project|Idea", "domain": "{domain_keys}", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
+    
+    RULES:
+    - Extract any explicitly mentioned target dates in YYYY-MM-DD format.
+    - If the type is 'Task' and NO target date is explicitly mentioned, set 'target_date' to exactly one week from today: {next_week.isoformat()}.
+    - Domain Routing Rules:
+        {domain_rules}
+    
     Text: {text}"""
+    
     try:
         response = client.models.generate_content(
             model=classification_model_name, 
@@ -174,7 +189,10 @@ def extract_metadata(text: str) -> dict:
 
 def ingest_thought(text: str) -> str:
     metadata = extract_metadata(text)
-    embedding = get_embedding(text)
+    
+    # Metadata injection to cluster vector space by domain and type
+    composite_text = f"Domain: {metadata.get('domain')}. Type: {metadata.get('type')}. Content: {text}"
+    embedding = get_embedding(composite_text)
     
     if not embedding:
         return "Failed to generate embedding. Thought not saved."

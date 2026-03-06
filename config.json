@@ -1,7 +1,11 @@
 {
   "environment": "DEV",
   "llm_models": {
-    "rag": "gemini-3-flash-preview",
-    "classification": "gemini-2.0-flash"
+    "rag": "gemini-2.5-flash",
+    "classification": "gemini-2.5-flash"
+  },
+  "domains": {
+    "Work": ["Infor", "FP7", "10.7", "Magento", "Oracle", "SQL Server", "ERP"],
+    "Home": ["ESP32", "Arduino", "Vegan", "Ubuntu", "house", "groceries"]
   }
 }

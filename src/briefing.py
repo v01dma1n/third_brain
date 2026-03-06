@@ -51,7 +51,7 @@ except (FileNotFoundError, KeyError, json.JSONDecodeError):
 
 client = genai.Client(
     api_key=GEMINI_API_KEY,
-    http_options={'timeout': 60.0}
+    http_options={'timeout': None}
 )
 
 def get_open_items():
@@ -99,7 +99,7 @@ def get_open_items():
             
     return filtered_rows
 
-def create_briefing_content(rows):
+async def create_briefing_content(rows):
     if not rows:
         return "No active items in the Third Brain. All clear!"
 
@@ -135,17 +135,17 @@ def create_briefing_content(rows):
     4. **Style:** Punchy, motivational, use emojis. No markdown headers like '##'.
     """
     
-    response = client.models.generate_content(
+    response = await client.aio.models.generate_content(
         model=rag_model_name,
         contents=prompt
     )
     return response.text
 
 async def send_briefing():
-    rows = get_open_items()
+    rows = await asyncio.to_thread(get_open_items)
     
     if len(rows) > 0:
-        message = create_briefing_content(rows)
+        message = await create_briefing_content(rows)
     else:
         message = "🌅 Morning! Zero open loops for the week. Have a great day."
 

@@ -213,14 +213,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         transcription_resp = await asyncio.to_thread(
             client.models.generate_content,
-            classification_model_name,
-            ["Transcribe this audio exactly as spoken.", uploaded_file]
+            model=classification_model_name,
+            contents=["Transcribe this audio exactly as spoken.", uploaded_file]
         )
         text = transcription_resp.text.strip()
         logger.info(f"Transcribed voice: {text}")
 
     prompt = f"Classify the following message as 'INGESTION' (storing a fact, idea, or task) or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). Message: '{text}'"
-    route_resp = await asyncio.to_thread(client.models.generate_content, classification_model_name, prompt)
+    route_resp = await asyncio.to_thread(client.models.generate_content, model=classification_model_name, contents=prompt)
     intent = route_resp.text.strip().upper()
     
     if "INGESTION" in intent:

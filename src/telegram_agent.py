@@ -259,8 +259,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "INGESTION" in intent:
         logger.info("Routing to Ingestion pipeline.")
         
-        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact (e.g., related to {', '.join(domain_config.keys())}).
-        Reject vague statements, conversational filler, or typos.
+        allowed_keywords = [kw for keywords in domain_config.values() for kw in keywords]
+        
+        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact explicitly related to these domains: {', '.join(domain_config.keys())}.
+        
+        CRITICAL RULES:
+        - Reject vague statements and conversational filler.
+
         Return ONLY a valid JSON object with this exact schema:
         {{"action": "ACCEPT" | "REJECT", "reason": "Brief explanation if rejected, or empty string if accepted"}}
         

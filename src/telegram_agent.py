@@ -100,8 +100,12 @@ def search_thoughts(query_text: str) -> dict:
         logger.error(f"search_thoughts failed: {e}")
         return {"error": str(e)}
 
-def list_thoughts(limit: int = 5) -> dict:
+def list_thoughts(limit: int = 5, status: str = None) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&order=created_at.desc&limit={limit}"
+    
+    if status:
+        url += f"&metadata->>status=eq.{status}"
+        
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
@@ -146,6 +150,7 @@ system_instruction = """
 You are the Third Brain retrieval agent. 
 Use your tools to query the Supabase database to answer user questions.
 If a user asks to mark a task as done or update a status, use the search_thoughts tool to find the exact database ID first, then execute the update_thought tool.
+When a user asks to list or show tasks, always default to querying and displaying ONLY tasks with status 'New', unless they explicitly request closed, done, or all tasks.
 """
 
 agent_config = types.GenerateContentConfig(

@@ -11,8 +11,11 @@ mkdir -p "$DEST/src"
 
 cp "$SRC/src/"*.py "$DEST/src/"
 
-if [ -f "$SRC/config.json" ]; then
+if [ -f "$SRC/config.json" ] && [ ! -f "$DEST/config.json" ]; then
     cp "$SRC/config.json" "$DEST/"
+    echo "Initial config.json copied to PRD."
+elif [ -f "$DEST/config.json" ]; then
+    echo "config.json already exists in PRD. Skipping overwrite to preserve PROD settings."
 fi
 
 echo "Restarting Third Brain service..."

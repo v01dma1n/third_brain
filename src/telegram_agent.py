@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import json
 import logging
 import requests
@@ -11,7 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -250,6 +251,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if "INGESTION" in intent:
         logger.info("Routing to Ingestion pipeline.")
+        
+        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact (e.g., related to {', '.join(domain_config.keys())}).
+        Reject vague statements, conversational filler, or typos.
+        Return ONLY a valid JSON object with this exact schema:
+        {{"action": "ACCEPT" | "REJECT", "reason": "Brief explanation if rejected, or empty string if accepted"}}
+        
+        Text: {text}"""
+        
+        try:
+            bouncer_resp = await asyncio.to_thread(
+                client.models.generate_content,
+                model=classification_model_name,
+                contents=bouncer_prompt
+            )
+            cleaned_bouncer = bouncer_resp.text.strip().strip('```json').strip('```').strip()
+            bouncer_data = json.loads(cleaned_bouncer)
+            
+            if bouncer_data.get("action") == "REJECT":
+                logger.info(f"Bouncer rejected input: {bouncer_data.get('reason')}")
+                await msg.reply_text(f"Rejected: {bouncer_data.get('reason')}")
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                return
+        except Exception as e:
+            logger.error(f"Bouncer evaluation failed: {e}")
+
         await msg.reply_text("Processing ingestion...")
         result = await asyncio.to_thread(ingest_thought, text)
         await msg.reply_text(result)
@@ -266,6 +293,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Agent encountered an error: {context.error}")
+    if update and hasattr(update, "effective_message") and update.effective_message:
+        try:
+            await update.effective_message.reply_text("Temporary network or API failure. Please try again.")
+        except Exception:
+            pass
+
 if __name__ == "__main__":
     logger.info(f"Starting Third Brain Telegram Agent v{__version__} [{RUN_MODE}]...")
     
@@ -278,4 +313,12 @@ if __name__ == "__main__":
     )
     
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE, handle_message))
-    app.run_polling()
+    app.add_error_handler(error_handler)
+    
+    while True:
+        try:
+            app.run_polling()
+            break
+        except Exception as e:
+            logger.error(f"Startup network failure: {e}. Retrying in 15 seconds...")
+            time.sleep(15)

@@ -1,0 +1,4 @@
+google-genai
+python-telegram-bot
+python-dotenv
+requests

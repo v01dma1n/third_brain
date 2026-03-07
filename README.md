@@ -1,174 +1,107 @@
-# 🧠 Third Brain Bot
+# Third Brain Bot
 
 > **Vibe Coded** based on the [Second Brain philosophy by Nate B. Jones](https://natebjones.substack.com/) and [Open Brain also by Nate B. Jones](https://natebjones.substack.com/).
 
-# ToDo: update me!
+A natural language interface for capturing, structuring, and querying task and knowledge data. This system uses Telegram as the input layer, Google Gemini for intent routing and classification, OpenRouter for vector embeddings, and Supabase (PostgreSQL + pgvector) for storage and retrieval.
 
-A frictionless capture system that uses AI to organize your life. This Telegram bot acts as the interface to your Second Brain, separating the act of **capturing** ideas from the mental load of **organizing** them.
+## Architecture
 
-## 🌟 Philosophy
+The system operates on two primary pipelines evaluated dynamically by an LLM upon receiving a message:
 
-Traditional productivity systems fail because they ask you to categorize data *while* you are trying to capture it. This system uses **Google Gemini** to act as a "Sorter" and a "Bouncer," automatically classifying your inputs into **Work** or **Home** domains and filtering out low-confidence data.
+1. **Ingestion Pipeline**
 
-## ✨ Features
+   * **Transcription:** Voice notes are automatically transcribed.
 
-* **⚡ Frictionless Capture:** Send text or Voice Notes. The bot transcribes and processes them instantly.
-* **🤖 AI Classification:**
-    * **Work:** Strictly scoped to corporate topics (Infor, WSA, Magento, ERP, SQL).
-    * **Home:** Everything else (General Python/AI coding, Electronics, Personal, Cats, Jeep).
-* **📅 Smart Target Dates:** Simply say "Buy milk next Friday" or "Submit report tomorrow," and the AI automatically extracts and assigns the target date.
-* **🛡️ The Bouncer:**
-    * **High Confidence (≥60%):** Auto-saved to your active lists.
-    * **Low Confidence:** Held in a "Review Queue" for manual approval.
-* **🖥️ Interactive Web Dashboard:** A local Streamlit web app allowing you to view, filter, and bulk-edit your tasks in a spreadsheet-like interface.
-* **🧠 RAG Context:** Ask questions (`/ask`) about your past notes, tasks, and projects.
-* **🔄 Context Switching:** Smart logic detects if it is running in **DEV** (`~/projects`) or **PROD** (`~/bin`) and loads the appropriate environment variables.
-* **📂 Task Management:** Edit, Move, and Complete tasks directly from the chat interface using quick-click commands.
+   * **The Bouncer:** A strict validation gate rejects vague statements, conversational filler, or typos.
 
-## 🛠️ Tech Stack
+   * **Classification:** Extracts metadata (Type, Domain, Target Date, Topics) based on configurable business rules. Target dates default to 7 days out if unstated.
 
-* **Language:** Python 3.12+
-* **Interface:** [python-telegram-bot](https://python-telegram-bot.org/) & [Streamlit](https://streamlit.io/)
-* **Intelligence:** Google Gemini API (models: `gemini-2.0-flash` & `gemini-3-flash-preview`)
-* **Storage:** SQLite (`brain.db`) with Pandas for data manipulation
-* **Deployment:** Systemd User Services on Linux / Cron
+   * **Vectorization & Storage:** Generates a 1536-dimensional embedding using OpenRouter (`openai/text-embedding-3-small`) from a composite string of the text and metadata, and inserts the record into Supabase.
 
-## 🚀 Installation
+2. **Retrieval Pipeline**
 
-### 1. 🤖 Create your Telegram Bot
-Before you install the code, you need to register a bot with Telegram.
+   * Acts as an autonomous agent.
 
-1. Open Telegram and search for **@BotFather** (the official bot builder).
-2. Send the command `/newbot`.
-3. Follow the prompts:
-   * **Name:** The display name (e.g., "My Second Brain").
-   * **Username:** Must end in `bot` (e.g., `rybark_brain_bot`).
-4. **Copy the HTTP API Token** provided by BotFather. You will need this for Step 3.
+   * Leverages tool-calling to execute vector searches (`search_thoughts`), chronological queries (`list_thoughts`), and status modifications (`update_thought`) directly against the Supabase database.
 
-### 2. Clone & Environment
-```bash
-git clone [https://github.com/yourusername/second_brain.git](https://github.com/yourusername/second_brain.git)
-cd second_brain
-python3 -m venv ml-env
-source ml-env/bin/activate
-pip install -r requirements.txt
+## Tech Stack & Requirements
 
+* **Language:** Python 3.12+ (Ubuntu 12.04 compatible or standard Linux)
+
+* **Intelligence:** Google Gemini API (Intent Routing & Classification)
+
+* **Embeddings:** OpenRouter API (`openai/text-embedding-3-small`)
+
+* **Storage:** Supabase (PostgreSQL Database with `pgvector` extension enabled)
+
+## Configuration
+
+The system relies on a dual-configuration setup: a JSON file for application logic and `.env` files for secrets.
+
+### 1. Application Config (`config.json`)
+
+Create this file in the directory above your source code. It defines your domains, routing keywords, and models.
+
+```json
+{
+  "environment": "PROD",
+  "llm_models": {
+    "rag": "gemini-2.5-flash",
+    "classification": "gemini-2.5-flash"
+  },
+  "domains": {
+    "Work": ["Infor", "FP7", "10.7", "Magento", "Oracle", "SQL Server", "ERP"],
+    "Home": ["ESP32", "Arduino", "Vegan", "Ubuntu", "house", "groceries"]
+  }
+}
 ```
 
-### 3. Configuration
+### 2. Environment Variables
 
-The bot supports dual environments for safe development. Create these files in your **Home Directory** (`~/`):
-
-**Production:** `~/.second_brain.env`
+Create `.third_brain.env` (and `.third_brain_dev.env` for development) in your home directory (`~/`).
 
 ```ini
-TELEGRAM_BOT_TOKEN="YOUR_API_TOKEN_FROM_STEP_1"
-GEMINI_API_KEY="YOUR_GEMINI_KEY"
-TELEGRAM_BOT_CHAT_ID="YOUR_TELEGRAM_USER_ID"
-
+TELEGRAM_BOT_TOKEN="your_telegram_bot_token"
+TELEGRAM_BOT_CHAT_ID="your_telegram_chat_id"
+GEMINI_API_KEY="your_gemini_api_key"
+SUPABASE_URL="your_supabase_project_url"
+SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_key"
+OPENROUTER_API_KEY="your_openrouter_api_key"
 ```
 
-**Development:** `~/.second_brain_dev.env`
+## Usage
 
-```ini
-TELEGRAM_BOT_TOKEN="YOUR_DEV_BOT_TOKEN"
-GEMINI_API_KEY="YOUR_GEMINI_KEY"
-TELEGRAM_BOT_CHAT_ID="YOUR_TELEGRAM_USER_ID"
+### Running the Agent
 
-```
-
-#### 🆔 How to find your `TELEGRAM_BOT_CHAT_ID`
-
-The `briefing.py` script needs this ID to send **you** messages (since it runs via Cron, not as a reply to a user).
-
-**Option A: The Hacker Way (Recommended)**
-
-1. Run your bot manually: `python src/telegram_listener.py`
-2. Send a message to the bot on Telegram (e.g., "Hello").
-3. Look at your terminal output. The bot prints: `DEBUG: Chat ID: 123456789`
-4. Copy that number into your `.env` files.
-
-**Option B: The Easy Way**
-
-1. Search for `@userinfobot` on Telegram.
-2. Click Start.
-3. It will reply with your ID.
-
-### 4. Running the Bot (Listener)
-
-**Manual:**
+Start the listener process to monitor the Telegram bot for incoming text or voice messages.
 
 ```bash
-python src/telegram_listener.py
-
+python telegram_agent.py
 ```
 
-**Via Systemd:**
-Ensure your service file points to the correct working directory.
+### Running the Briefing
+
+The `briefing.py` script generates an LLM-summarized digest of open tasks that are overdue or due within the next 7 days. It is designed to be executed via a cron job.
 
 ```bash
-systemctl --user start second_brain
-
+# Example crontab entry to run daily at 7:00 AM
+0 7 * * * /path/to/python /path/to/briefing.py >> /path/to/briefing.log 2>&1
 ```
 
-### 5. 🖥️ Running the Interactive Dashboard
+## Interaction Guidelines
 
-The system includes a local web interface to edit and view tasks.
+No slash commands are required. Interact via natural language.
 
-```bash
-# Make sure your virtual environment is active!
-streamlit run src/dashboard.py
+**Ingestion Examples:**
 
-```
+* "I need to review the SQL Server logs for the FP7 migration by Friday." (Routes to Work, sets specific date).
 
-*(If you created the `dashboard.sh` helper script, you can simply run `./dashboard.sh`)*
+* "Buy almond milk and tofu." (Routes to Home, sets date 7 days out).
 
-### 6. 🌅 Running the Daily Briefing
+**Retrieval & Management Examples:**
 
-The `briefing.py` script scans your "Open Loops" and sends a summarized AI digest to your Telegram every morning. It specifically targets overdue items and tasks due within the next 7 days, filtering out far-future noise.
+* "List my open Work tasks."
 
-1. Open your crontab:
+* "What did I decide about the Magento caching issue?"
 
-```bash
-crontab -e
-
-```
-
-2. Add the following line (adjust paths to match your system):
-
-```bash
-# Daily Briefing at 7:00 AM
-0 7 * * * set -a; . $HOME/.second_brain.env; set +a; $HOME/projects/local/second_brain/ml-env/bin/python $HOME/projects/local/second_brain/src/briefing.py >> $HOME/projects/local/second_brain/log/briefing.log 2>&1
-
-```
-
-## 🎮 Commands
-
-| Command | Description |
-| --- | --- |
-| `/todo` | View all active tasks (sorted by target date). |
-| `/work` | View only Work tasks. |
-| `/home` | View only Home tasks. |
-| `/ask <query>` | RAG search your history. |
-| `/done123` | Mark task ID 123 as complete. |
-| `/edit123 <text>` | Rewrite the summary for task ID 123. |
-| `/move123` | Toggle domain for task ID 123 (Work ↔ Home). |
-| `/review` | See items held by **The Bouncer**. |
-| `/confirm123` | Force approve review item ID 123. |
-| `/version` | Check bot version and running mode. |
-
-## 🛡️ The Bouncer Logic
-
-To prevent "garbage in, garbage out," the bot assigns a confidence score (0-100) to every classification.
-
-1. **Input:** "Restart the server"
-2. **AI Analysis:** "Domain: Work, Confidence: 45%" (Ambiguous—could be home lab or work server).
-3. **Action:** Saved with status `Review`. User must type `/confirm` or `/edit` to activate it.
-
----
-
-*Generated via Vibe Coding / AI-Assisted Development.*
-
-```
-
-```
+* "Mark the task about the FP7 server logs as done."

@@ -1,5 +1,6 @@
 substack/
 tmp/
+log/
 *.db
 *.code-workspace
 *.*~

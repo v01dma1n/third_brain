@@ -2,14 +2,16 @@ import os
 import sys
 import json
 import asyncio
+import smtplib
 import datetime
 import logging
 import requests
+from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from google import genai
 from telegram import Bot
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -47,10 +49,18 @@ CHAT_ID = os.environ.get("TELEGRAM_BOT_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+GMAIL_SENDER = os.environ.get("GMAIL_SENDER")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+WORK_EMAIL = os.environ.get("WORK_EMAIL")
+HOME_EMAIL = os.environ.get("HOME_EMAIL")
 
 if not all([TELEGRAM_TOKEN, CHAT_ID, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     logger.error("Missing required environment variables.")
     sys.exit(1)
+
+email_enabled = all([GMAIL_SENDER, GMAIL_APP_PASSWORD, WORK_EMAIL, HOME_EMAIL])
+if not email_enabled:
+    logger.warning("Email env vars missing — email briefings disabled.")
 
 client = genai.Client(
     api_key=GEMINI_API_KEY,
@@ -59,23 +69,19 @@ client = genai.Client(
 
 def get_open_items():
     today = datetime.date.today()
-    limit_date = today + datetime.timedelta(days=7)
-    limit_date_str = limit_date.isoformat()
+    limit_date_str = (today + datetime.timedelta(days=7)).isoformat()
 
     url = f"{SUPABASE_URL}/rest/v1/thoughts"
-    
     params = {
         "select": "id,content,metadata",
         "metadata->>status": "eq.New",
         "metadata->>type": "in.(Task,Project,Admin)",
         "or": f"(metadata->>target_date.is.null,metadata->>target_date.lte.{limit_date_str})"
     }
-    
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
-    
     try:
         response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
@@ -84,70 +90,100 @@ def get_open_items():
         logger.error(f"Failed to fetch from Supabase: {e}")
         return []
 
-async def create_briefing_content(rows):
+async def create_briefing_content(rows: list, domain_label: str = "all") -> str:
     if not rows:
-        return "No active items in the Third Brain. All clear!"
+        return ""
 
     today = datetime.date.today()
     today_str = today.isoformat()
     next_week_str = (today + datetime.timedelta(days=7)).isoformat()
-    
+
     data_list = []
     for row in rows:
         meta = row.get("metadata", {})
         type_ = meta.get("type", "Task")
         t_date = meta.get("target_date")
-        
         if type_ == "Task" and not t_date:
             t_date = next_week_str
-            
         date_info = f"[Target: {t_date}]" if t_date else "[No Date]"
-        
         summary = row.get("content", "").split("\n")[0][:100]
-        
         data_list.append(f"- {date_info} {type_}: {summary}")
-    
+
+    domain_context = f"({domain_label} tasks)" if domain_label != "all" else "(all tasks)"
     data_text = "\n".join(data_list)
-    
+
     prompt = f"""
-    You are an executive assistant. 
+    You are an executive assistant.
     TODAY IS: {today_str}
-    
-    Here are the user's active tasks (filtered to overdue, due this week, or backlog):
-    
+
+    Here are the user's active tasks {domain_context} filtered to overdue, due this week, or backlog:
+
     {data_text}
-    
-    Generate a 'Morning Briefing' for Telegram.
-    
+
+    Generate a 'Morning Briefing' for {'email' if domain_label != 'all' else 'Telegram'}.
+
     RULES:
     1. **Overdue Items:** If a target date is before {today_str}, flag it as 🚨 OVERDUE.
     2. **Priorities:** Pick the top 3 most important items (focus on Overdue or Due Today).
     3. **Grouping:** Group the rest logically (e.g., "📅 Coming Up", "📥 Backlog").
     4. **Style:** Punchy, motivational, use emojis. No markdown headers like '##'.
     """
-    
+
     response = await client.aio.models.generate_content(
         model=rag_model_name,
         contents=prompt
     )
     return response.text
 
+def send_email(to_addr: str, subject: str, body: str):
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = f"ThirdBrain <{GMAIL_SENDER}>"
+    msg["To"] = to_addr
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_SENDER, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        logger.info(f"Email sent to {to_addr}")
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_addr}: {e}")
+
 async def send_briefing():
-    rows = await asyncio.to_thread(get_open_items)
-    
-    if len(rows) > 0:
-        message = await create_briefing_content(rows)
+    all_rows = await asyncio.to_thread(get_open_items)
+
+    work_rows = [r for r in all_rows if r.get("metadata", {}).get("domain") == "Work"]
+    home_rows = [r for r in all_rows if r.get("metadata", {}).get("domain") == "Home"]
+
+    # Telegram — combined
+    if all_rows:
+        telegram_msg = await create_briefing_content(all_rows, domain_label="all")
     else:
-        message = "🌅 Morning! Zero open loops for the week. Have a great day."
+        telegram_msg = "🌅 Morning! Zero open loops for the week. Have a great day."
 
     bot = Bot(TELEGRAM_TOKEN)
     await bot.send_message(
-        chat_id=CHAT_ID, 
-        text=message, 
+        chat_id=CHAT_ID,
+        text=telegram_msg,
         read_timeout=30.0,
         connect_timeout=30.0
     )
-    logger.info("Briefing sent.")
+    logger.info("Telegram briefing sent.")
+
+    # Emails — domain-split
+    if email_enabled:
+        today_str = datetime.date.today().strftime("%b %d")
+
+        if work_rows:
+            work_body = await create_briefing_content(work_rows, domain_label="Work")
+            await asyncio.to_thread(send_email, WORK_EMAIL, f"Work Briefing — {today_str}", work_body)
+        else:
+            logger.info("No Work items — skipping work email.")
+
+        if home_rows:
+            home_body = await create_briefing_content(home_rows, domain_label="Home")
+            await asyncio.to_thread(send_email, HOME_EMAIL, f"Home Briefing — {today_str}", home_body)
+        else:
+            logger.info("No Home items — skipping home email.")
 
 if __name__ == '__main__':
     logger.info(f"Starting Third Brain Briefing v{__version__} [{RUN_MODE}]...")

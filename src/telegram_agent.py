@@ -12,7 +12,13 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
+
+HISTORY_MAX_TURNS = 10   # keep last N user+model pairs (20 Content objects)
+HISTORY_TTL_SECONDS = 3600  # clear idle sessions after 1 hour
+
+conversation_histories: dict[int, list] = {}
+conversation_last_active: dict[int, float] = {}
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -120,45 +126,69 @@ def list_thoughts(limit: int = 12, status: str = None) -> dict:
         logger.error(f"list_thoughts failed: {e}")
         return {"error": str(e)}
 
-def update_thought(thought_id: str, new_status: str) -> dict:
+def update_thought(thought_id: str, new_status: str = None, new_target_date: str = None) -> dict:
+    """Update status and/or target_date of a thought. new_target_date must be YYYY-MM-DD or null."""
     get_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}&select=metadata"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
-    
+
     try:
         resp = requests.get(get_url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if not data:
             return {"error": f"ID {thought_id} not found."}
-            
+
         metadata = data[0].get("metadata", {})
-        metadata["status"] = new_status
-        
+        updated_fields = []
+
+        if new_status is not None:
+            metadata["status"] = new_status
+            updated_fields.append(f"status → {new_status}")
+        if new_target_date is not None:
+            metadata["target_date"] = new_target_date
+            updated_fields.append(f"target_date → {new_target_date}")
+
+        if not updated_fields:
+            return {"error": "No fields to update. Provide new_status and/or new_target_date."}
+
         patch_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}"
         patch_headers = {**headers, "Content-Type": "application/json"}
         patch_resp = requests.patch(patch_url, headers=patch_headers, json={"metadata": metadata}, timeout=10)
         patch_resp.raise_for_status()
-        
-        return {"success": True, "message": f"Thought {thought_id} marked as {new_status}."}
+
+        return {"success": True, "message": f"Updated: {', '.join(updated_fields)}."}
     except requests.exceptions.RequestException as e:
         logger.error(f"update_thought failed: {e}")
         return {"error": str(e)}
 
-system_instruction = """
-You are the Third Brain retrieval agent. 
-Use your tools to query the Supabase database to answer user questions.
-If a user asks to mark a task as done or update a status, use the search_thoughts tool to find the exact database ID first, then execute the update_thought tool.
-When a user asks to list or show tasks, always default to querying and displaying ONLY tasks with status 'New', unless they explicitly request closed, done, or all tasks.
-Do not add UUID of the database entry in any of your responses unless explicitly requested.
-"""
+AGENT_TOOLS = [search_thoughts, list_thoughts, update_thought]
 
-agent_config = types.GenerateContentConfig(
-    system_instruction=system_instruction,
-    tools=[search_thoughts, list_thoughts, update_thought],
-)
+def build_agent_config() -> types.GenerateContentConfig:
+    today = datetime.date.today().isoformat()
+    system_instruction = f"""
+You are the Third Brain retrieval agent.
+Use your tools to query the Supabase database to answer user questions.
+TODAY IS: {today}
+
+UPDATING TASKS:
+- To update status or target_date, first find the exact database ID via search_thoughts or list_thoughts, then call update_thought.
+- update_thought accepts new_status (e.g. 'Done', 'New', 'Review') and/or new_target_date (YYYY-MM-DD format).
+- If the user says "last task" or "most recent", use list_thoughts(limit=1) to find it.
+- Convert natural language dates (e.g. "next Monday", "end of month") to YYYY-MM-DD before calling update_thought.
+
+LISTING TASKS:
+- Default to showing only status 'New' unless the user asks for done, all, or review items.
+
+GENERAL:
+- Do not include UUIDs in responses unless explicitly requested.
+"""
+    return types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        tools=AGENT_TOOLS,
+    )
 
 def extract_metadata(text: str) -> dict:
     today = datetime.date.today()
@@ -229,9 +259,16 @@ def ingest_thought(text: str, status: str = "New") -> str:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
+    chat_id = update.effective_chat.id
     text = msg.text or ""
     file_path = None
     uploaded_file = None
+
+    now = time.time()
+    if chat_id in conversation_last_active and now - conversation_last_active[chat_id] > HISTORY_TTL_SECONDS:
+        conversation_histories.pop(chat_id, None)
+        logger.info(f"Cleared stale conversation history for chat {chat_id}")
+    conversation_last_active[chat_id] = now
 
     if msg.voice:
         file = await context.bot.get_file(msg.voice.file_id)
@@ -303,9 +340,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.info("Routing to Retrieval pipeline.")
         try:
-            chat = client.chats.create(model=rag_model_name, config=agent_config)
+            history = conversation_histories.get(chat_id, [])
+            chat = client.chats.create(model=rag_model_name, config=build_agent_config(), history=history)
             response = await asyncio.to_thread(chat.send_message, message=text)
             await msg.reply_text(response.text)
+            conversation_histories[chat_id] = list(chat.history)[-(HISTORY_MAX_TURNS * 2):]
         except Exception as e:
             logger.error(f"Retrieval error: {e}")
             await msg.reply_text("Failed to retrieve or update information.")

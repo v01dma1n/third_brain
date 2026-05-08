@@ -1,37 +1,107 @@
-# Third Brain Bot
+# Third Brain
 
 > **Vibe Coded** based on the [Second Brain philosophy by Nate B. Jones](https://natebjones.substack.com/) and [Open Brain also by Nate B. Jones](https://natebjones.substack.com/).
 
-A natural language interface for capturing, structuring, and querying task and knowledge data. This system uses Telegram as the input layer, Google Gemini for intent routing and classification, OpenRouter for vector embeddings, and Supabase (PostgreSQL + pgvector) for storage and retrieval.
+A natural language interface for capturing, structuring, and querying personal tasks and knowledge. Telegram is the input layer; Google Gemini handles intent routing, classification, and retrieval; OpenRouter generates vector embeddings; Supabase (PostgreSQL + pgvector) provides storage and semantic search.
+
+## Features
+
+- **Voice and text capture** via Telegram — no slash commands required
+- **Confidence-based bouncer** — high-confidence items land in `New`, low-confidence items go to `Review` for manual approval
+- **Semantic search** via pgvector — retrieval understands meaning, not just keywords
+- **Autonomous retrieval agent** — tool-calling LLM answers questions and updates tasks in natural language
+- **Human-friendly task IDs** — every thought gets a `#seq_id` (e.g. `#7`) for easy reference
+- **Per-session conversation memory** — agent remembers the last 10 exchanges for multi-turn interactions
+- **Morning briefing** — daily digest sent to Telegram (combined) and email (Work and Home separately)
+- **Streamlit dashboard** — browser UI for bulk review, filtering, and inline editing
 
 ## Architecture
 
-The system operates on two primary pipelines evaluated dynamically by an LLM upon receiving a message:
+Each incoming Telegram message is routed by an LLM to one of two pipelines:
 
-1. **Ingestion Pipeline**
-   * **Transcription:** Voice notes are automatically transcribed.
-   * **The Bouncer:** A strict validation gate rejects vague statements, conversational filler, or typos.
-   * **Classification:** Extracts metadata (Type, Domain, Target Date, Topics) based on configurable business rules. Target dates default to 7 days out if unstated.
-   * **Vectorization & Storage:** Generates a 1536-dimensional embedding using OpenRouter (`openai/text-embedding-3-small`) from a composite string of the text and metadata, and inserts the record into Supabase.
+### Ingestion Pipeline
 
-2. **Retrieval Pipeline**
-   * Acts as an autonomous agent.
-   * Leverages tool-calling to execute vector searches (`search_thoughts`), chronological queries (`list_thoughts`), and status modifications (`update_thought`) directly against the Supabase database.
+1. **Transcription** — voice notes are transcribed automatically via Gemini
+2. **Intent routing** — LLM classifies the message as `INGESTION` or `RETRIEVAL`
+3. **The Bouncer** — evaluates whether the input is concrete and actionable; returns a confidence score (0–100)
+   - Score ≥ 60 → saved as `New`
+   - Score < 60 → saved as `Review` (visible in dashboard for approval)
+   - Clear filler/typo → rejected with a reason
+4. **Metadata extraction** — extracts `type` (Task / Project / Admin / Idea), `domain` (Work / Home), `topics`, and `target_date` (defaults to 7 days out for Tasks)
+5. **Vectorization** — 1536-dimensional embedding generated via OpenRouter (`openai/text-embedding-3-small`)
+6. **Storage** — record inserted into Supabase `thoughts` table
 
-## Tech Stack & Requirements
+### Retrieval Pipeline
 
-* **Language:** Python 3.12+ (Ubuntu 12.04 compatible or standard Linux)
-* **Intelligence:** Google Gemini API (Intent Routing & Classification)
-* **Embeddings:** OpenRouter API (`openai/text-embedding-3-small`)
-* **Storage:** Supabase (PostgreSQL Database with `pgvector` extension enabled)
+An autonomous LLM agent with access to three tools:
+
+| Tool | Description |
+|---|---|
+| `search_thoughts(query)` | Semantic vector search via Supabase `pgvector` |
+| `list_thoughts(limit, status)` | Chronological listing with optional status filter |
+| `update_thought(seq_id, new_status, new_target_date)` | Update status and/or target date by `#seq_id` |
+
+Per-session conversation history (last 10 turns, 1-hour TTL) is passed on each request so multi-turn references like "mark the second one as done" work correctly.
+
+### Morning Briefing
+
+Runs daily via cron. Queries Supabase for all `New` Tasks, Projects, and Admin items that are overdue, due within 7 days, or undated. Generates three separate Gemini-summarized digests:
+
+- **Telegram** — combined (Work + Home)
+- **Work email** — Work domain items only
+- **Home email** — Home domain items only
+
+### Dashboard
+
+A Streamlit web UI served as a persistent systemd service. Provides:
+
+- Sidebar filters by status, domain, and type
+- Editable table with dropdowns for status / domain / type, date picker for target date
+- `#seq_id` column as the human-friendly reference
+- Metrics bar (shown / Work / Home / Review counts)
+- Auto-saves changed rows to Supabase on edit
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Interface | Telegram Bot (`python-telegram-bot`) |
+| LLM | Google Gemini (`gemini-2.5-flash`) |
+| Embeddings | OpenRouter (`openai/text-embedding-3-small`, 1536-dim) |
+| Storage | Supabase — PostgreSQL + `pgvector` |
+| Dashboard | Streamlit |
+| Email | Gmail SMTP (`smtplib`) |
+| Runtime | Python 3.12+, systemd user services |
+
+## Supabase Schema
+
+```sql
+CREATE TABLE thoughts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    seq_id BIGSERIAL,
+    content TEXT,
+    metadata JSONB,   -- {type, domain, topics, status, target_date}
+    embedding VECTOR(1536),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Vector similarity search function
+CREATE OR REPLACE FUNCTION query_thoughts(query_embedding VECTOR(1536), match_count INT)
+RETURNS TABLE(id UUID, content TEXT, metadata JSONB, similarity FLOAT)
+LANGUAGE sql AS $$
+    SELECT id, content, metadata, 1 - (embedding <=> query_embedding) AS similarity
+    FROM thoughts
+    ORDER BY embedding <=> query_embedding
+    LIMIT match_count;
+$$;
+```
 
 ## Configuration
 
-The system relies on a dual-configuration setup: a JSON file for application logic and `.env` files for secrets.
+### `config.json`
 
-### 1. Application Config (`config.json`)
-
-Create this file in the directory above your source code. It defines your domains, routing keywords, and models.
+Place in the project root. Controls environment, models, and domain routing keywords.
 
 ```json
 {
@@ -41,49 +111,37 @@ Create this file in the directory above your source code. It defines your domain
     "classification": "gemini-2.5-flash"
   },
   "domains": {
-    "Work": ["Infor", "FP7", "10.7", "Magento", "Oracle", "SQL Server", "ERP"],
-    "Home": ["ESP32", "Arduino", "Vegan", "Ubuntu", "house", "groceries"]
+    "Work": ["keyword1", "keyword2"],
+    "Home": ["keyword3", "keyword4"]
   }
 }
 ```
 
-### 2. Environment Variables
+### `.third_brain.env`
 
-Create `.third_brain.env` (and `.third_brain_dev.env` for development) in your home directory (`~/`).
+Place in `~/`. Use `.third_brain_dev.env` for a development environment (set `"environment": "DEV"` in `config.json`).
 
 ```ini
 TELEGRAM_BOT_TOKEN="your_telegram_bot_token"
 TELEGRAM_BOT_CHAT_ID="your_telegram_chat_id"
 GEMINI_API_KEY="your_gemini_api_key"
 SUPABASE_URL="your_supabase_project_url"
-SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_key"
+SUPABASE_SERVICE_ROLE_KEY="your_supabase_service_role_key"
 OPENROUTER_API_KEY="your_openrouter_api_key"
+GMAIL_SENDER="your_gmail_address"
+GMAIL_APP_PASSWORD="your_gmail_app_password"
+WORK_EMAIL="your_work_email"
+HOME_EMAIL="your_home_email"
 ```
 
-## Usage
+> Gmail app passwords require 2FA. Generate one at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
 
-### Running the Agent (Manual)
+## Deployment
 
-Start the listener process to monitor the Telegram bot for incoming text or voice messages manually:
-
-```bash
-python telegram_agent.py
-```
-
-### Running the Agent (Systemd Service)
-
-To run the agent continuously in the background on Ubuntu, configure it as a user-level systemd service.
-
-1. Create the service file:
-
-```bash
-mkdir -p ~/.config/systemd/user/
-nano ~/.config/systemd/user/third_brain.service
-```
-
-2. Add the following configuration. This specifically points to your `pyenv` managed `ml-env` Python binary:
+### Telegram Agent (systemd)
 
 ```ini
+# ~/.config/systemd/user/third_brain.service
 [Unit]
 Description=Third Brain Telegram Agent
 After=network.target
@@ -100,37 +158,67 @@ Environment="PYTHONUNBUFFERED=1"
 WantedBy=default.target
 ```
 
-3. Enable and start the service:
+### Dashboard (systemd)
+
+```ini
+# ~/.config/systemd/user/third_brain_dashboard.service
+[Unit]
+Description=Third Brain Streamlit Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bin/third_brain
+ExecStart=%h/.pyenv/versions/ml-env/bin/streamlit run src/dashboard.py --server.headless true --server.port 8502
+Restart=always
+RestartSec=10
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=default.target
+```
+
+Enable both services:
 
 ```bash
 loginctl enable-linger $USER
 systemctl --user daemon-reload
-systemctl --user enable third_brain
-systemctl --user start third_brain
+systemctl --user enable third_brain third_brain_dashboard
+systemctl --user start third_brain third_brain_dashboard
 ```
 
-Check the logs using: `journalctl --user -u third_brain -f`
-
-### Running the Briefing
-
-The `briefing.py` script generates an LLM-summarized digest of open tasks that are overdue or due within the next 7 days. It is designed to be executed via a cron job.
+### Morning Briefing (cron)
 
 ```bash
-# Example crontab entry to run daily at 7:00 AM using your pyenv python binary
-0 7 * * * set -a; . $HOME/.third_brain.env; set +a; /home/voidmain/.pyenv/versions/ml-env/bin/python $HOME/bin/third_brain/src/briefing.py >> $HOME/bin/third_brain/log/briefing.log 2>&1
+# Runs daily at 6:00 AM
+0 6 * * * set -a; . $HOME/.third_brain.env; set +a; $HOME/.pyenv/versions/ml-env/bin/python $HOME/bin/third_brain/src/briefing.py >> $HOME/bin/third_brain/log/briefing.log 2>&1
 ```
 
-## Interaction Guidelines
+## Usage Examples
 
-No slash commands are required. Interact via natural language.
+### Ingestion
 
-**Ingestion Examples:**
+```
+"Review SQL Server logs for the FP7 migration by Friday"
+→ Work / Task / target_date set to next Friday
 
-* "I need to review the SQL Server logs for the FP7 migration by Friday." (Routes to Work, sets specific date).
-* "Buy almond milk and tofu." (Routes to Home, sets date 7 days out).
+"Buy almond milk and tofu"
+→ Home / Task / target_date set 7 days out
 
-**Retrieval & Management Examples:**
+"Idea: use pgvector for the new search feature"
+→ Home / Idea / no target date
+```
 
-* "List my open Work tasks."
-* "What did I decide about the Magento caching issue?"
-* "Mark the task about the FP7 server logs as done."
+### Retrieval & Updates
+
+```
+"List my open Work tasks"
+"What did I decide about the Magento caching issue?"
+"Change the date on task #7 to next Monday"
+"Mark #12 as done"
+"Show me items in Review"
+```
+
+### Dashboard
+
+Access at `http://localhost:8502` (or your Tailscale IP on port 8502 for remote access). Use the Review status filter to approve low-confidence bouncer items.

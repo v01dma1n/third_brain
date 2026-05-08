@@ -33,7 +33,7 @@ HEADERS = {
 @st.cache_data(ttl=30)
 def fetch_thoughts():
     url = f"{SUPABASE_URL}/rest/v1/thoughts"
-    params = {"select": "id,content,metadata,created_at", "order": "created_at.desc"}
+    params = {"select": "seq_id,id,content,metadata,created_at", "order": "created_at.desc"}
     resp = requests.get(url, headers=HEADERS, params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
@@ -51,6 +51,7 @@ def flatten(raw: list) -> pd.DataFrame:
         meta = item.get("metadata", {})
         topics = meta.get("topics", [])
         rows.append({
+            "#": item.get("seq_id"),
             "id": item["id"],
             "created": item.get("created_at", "")[:10],
             "type": meta.get("type", ""),
@@ -117,9 +118,10 @@ edited = st.data_editor(
     key="thought_editor",
     use_container_width=True,
     hide_index=True,
-    disabled=["id", "created"],
-    column_order=["created", "type", "domain", "status", "target_date", "topics", "content", "id"],
+    disabled=["#", "id", "created"],
+    column_order=["#", "created", "type", "domain", "status", "target_date", "topics", "content", "id"],
     column_config={
+        "#": st.column_config.NumberColumn("#", width="small"),
         "id": st.column_config.TextColumn("ID", width="small"),
         "created": st.column_config.TextColumn("Created", width="small"),
         "status": st.column_config.SelectboxColumn(

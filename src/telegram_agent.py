@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 
 HISTORY_MAX_TURNS = 10   # keep last N user+model pairs (20 Content objects)
 HISTORY_TTL_SECONDS = 3600  # clear idle sessions after 1 hour
@@ -85,6 +85,35 @@ def get_embedding(text: str) -> list:
         logger.error(f"Embedding generation failed: {e}")
         return []
 
+def _uuid_from_seq_id(seq_id: int) -> str | None:
+    url = f"{SUPABASE_URL}/rest/v1/thoughts?seq_id=eq.{seq_id}&select=id"
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data[0]["id"] if data else None
+    except Exception:
+        return None
+
+def _enrich_seq_ids(items: list) -> list:
+    if not items or not isinstance(items, list):
+        return items
+    ids = [item["id"] for item in items if "id" in item and "seq_id" not in item]
+    if not ids:
+        return items
+    url = f"{SUPABASE_URL}/rest/v1/thoughts?id=in.({','.join(ids)})&select=id,seq_id"
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        seq_map = {r["id"]: r["seq_id"] for r in resp.json()}
+        for item in items:
+            item["seq_id"] = seq_map.get(item.get("id"))
+    except Exception:
+        pass
+    return items
+
 def search_thoughts(query_text: str) -> dict:
     embedding = get_embedding(query_text)
     if not embedding:
@@ -102,13 +131,13 @@ def search_thoughts(query_text: str) -> dict:
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        return response.json()
+        return _enrich_seq_ids(response.json())
     except requests.exceptions.RequestException as e:
         logger.error(f"search_thoughts failed: {e}")
         return {"error": str(e)}
 
 def list_thoughts(limit: int = 12, status: str = None) -> dict:
-    url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&order=created_at.desc&limit={limit}"
+    url = f"{SUPABASE_URL}/rest/v1/thoughts?select=seq_id,content,metadata&order=created_at.desc&limit={limit}"
     
     if status:
         url += f"&metadata->>status=eq.{status}"
@@ -126,8 +155,12 @@ def list_thoughts(limit: int = 12, status: str = None) -> dict:
         logger.error(f"list_thoughts failed: {e}")
         return {"error": str(e)}
 
-def update_thought(thought_id: str, new_status: str = None, new_target_date: str = None) -> dict:
-    """Update status and/or target_date of a thought. new_target_date must be YYYY-MM-DD or null."""
+def update_thought(seq_id: int, new_status: str = None, new_target_date: str = None) -> dict:
+    """Update status and/or target_date of a thought by its #seq_id. new_target_date must be YYYY-MM-DD."""
+    thought_id = _uuid_from_seq_id(seq_id)
+    if not thought_id:
+        return {"error": f"No thought found with #id {seq_id}."}
+
     get_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}&select=metadata"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -139,7 +172,7 @@ def update_thought(thought_id: str, new_status: str = None, new_target_date: str
         resp.raise_for_status()
         data = resp.json()
         if not data:
-            return {"error": f"ID {thought_id} not found."}
+            return {"error": f"Thought #{seq_id} not found."}
 
         metadata = data[0].get("metadata", {})
         updated_fields = []
@@ -174,9 +207,11 @@ Use your tools to query the Supabase database to answer user questions.
 TODAY IS: {today}
 
 UPDATING TASKS:
-- To update status or target_date, first find the exact database ID via search_thoughts or list_thoughts, then call update_thought.
-- update_thought accepts new_status (e.g. 'Done', 'New', 'Review') and/or new_target_date (YYYY-MM-DD format).
-- If the user says "last task" or "most recent", use list_thoughts(limit=1) to find it.
+- Every thought has a human-friendly #seq_id (e.g. #7, #42) shown in all list and search results.
+- To update a thought, call update_thought(seq_id=<number>, ...). Always use seq_id, never UUIDs.
+- update_thought accepts new_status (e.g. 'Done', 'New', 'Review') and/or new_target_date (YYYY-MM-DD).
+- If the user says "last task" or "most recent", use list_thoughts(limit=1) to find its seq_id.
+- If the user says "task #7" or "number 7", use seq_id=7 directly — no lookup needed.
 - Convert natural language dates (e.g. "next Monday", "end of month") to YYYY-MM-DD before calling update_thought.
 
 LISTING TASKS:
@@ -285,7 +320,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = transcription_resp.text.strip()
         logger.info(f"Transcribed voice: {text}")
 
-    prompt = f"Classify the following message as 'INGESTION' (storing a fact, idea, or task) or 'RETRIEVAL' (asking a question, requesting a search, or updating a task status). Message: '{text}'"
+    prompt = f"""Classify the following message as exactly one of: INGESTION or RETRIEVAL.
+
+RETRIEVAL: Any question, search, or modification of an existing entry. This includes:
+- Asking to show, list, find, or search for tasks/ideas
+- Changing, updating, modifying, rescheduling, or moving a task's date, status, domain, or any field
+- Marking something as done, complete, or cancelled
+- "Change X", "update X", "reschedule X", "move X to", "set X to", "what are my...", "show me..."
+
+INGESTION: Creating a brand new entry that does not yet exist. This includes:
+- Stating a new task, idea, fact, or project to remember
+- "I need to...", "Remember to...", "Add a task to...", "Note that..."
+
+Return ONLY the single word INGESTION or RETRIEVAL.
+Message: '{text}'"""
     route_resp = await asyncio.to_thread(
         client.models.generate_content, 
         model=classification_model_name, 
@@ -344,7 +392,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat = client.chats.create(model=rag_model_name, config=build_agent_config(), history=history)
             response = await asyncio.to_thread(chat.send_message, message=text)
             await msg.reply_text(response.text)
-            conversation_histories[chat_id] = list(chat.history)[-(HISTORY_MAX_TURNS * 2):]
+            conversation_histories[chat_id] = list(chat.get_history())[-(HISTORY_MAX_TURNS * 2):]
         except Exception as e:
             logger.error(f"Retrieval error: {e}")
             await msg.reply_text("Failed to retrieve or update information.")

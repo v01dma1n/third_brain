@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -101,7 +101,7 @@ def search_thoughts(query_text: str) -> dict:
         logger.error(f"search_thoughts failed: {e}")
         return {"error": str(e)}
 
-def list_thoughts(limit: int = 5, status: str = None) -> dict:
+def list_thoughts(limit: int = 12, status: str = None) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/thoughts?select=id,content,metadata&order=created_at.desc&limit={limit}"
     
     if status:
@@ -171,7 +171,7 @@ def extract_metadata(text: str) -> dict:
     TODAY IS: {today.isoformat()}
     
     Return ONLY a valid JSON object with this exact schema:
-    {{"type": "Task|Project|Idea", "domain": "{domain_keys}", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
+    {{"type": "Task|Project|Admin|Idea", "domain": "{domain_keys}", "topics": ["tag1", "tag2"], "status": "New", "target_date": "YYYY-MM-DD or null"}}
     
     RULES:
     - Extract any explicitly mentioned target dates in YYYY-MM-DD format.
@@ -195,10 +195,10 @@ def extract_metadata(text: str) -> dict:
         logger.error(f"Metadata extraction failed: {e}")
         return {"type": "Idea", "domain": "Home", "topics": [], "status": "New"}
 
-def ingest_thought(text: str) -> str:
+def ingest_thought(text: str, status: str = "New") -> str:
     metadata = extract_metadata(text)
+    metadata["status"] = status
     
-    # Metadata injection to cluster vector space by domain and type
     composite_text = f"Domain: {metadata.get('domain')}. Type: {metadata.get('type')}. Content: {text}"
     embedding = get_embedding(composite_text)
     
@@ -259,18 +259,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "INGESTION" in intent:
         logger.info("Routing to Ingestion pipeline.")
         
-        allowed_keywords = [kw for keywords in domain_config.values() for kw in keywords]
-        
-        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact explicitly related to these domains: {', '.join(domain_config.keys())}.
-        
-        CRITICAL RULES:
-        - Reject vague statements and conversational filler.
-
+        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact (e.g., related to {', '.join(domain_config.keys())}).
         Return ONLY a valid JSON object with this exact schema:
-        {{"action": "ACCEPT" | "REJECT", "reason": "Brief explanation if rejected, or empty string if accepted"}}
-        
+        {{"action": "ACCEPT" | "REJECT", "confidence": <integer 0-100>, "reason": "Brief explanation if rejected or uncertain, empty string if clearly accepted"}}
+
+        RULES:
+        - REJECT vague statements, conversational filler, or clear typos.
+        - ACCEPT concrete tasks, ideas, facts, or projects.
+        - confidence: how certain you are this is worth capturing (0=clearly invalid, 100=clearly valuable).
+
         Text: {text}"""
-        
+
+        status = "New"
         try:
             bouncer_resp = await asyncio.to_thread(
                 client.models.generate_content,
@@ -279,19 +279,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             cleaned_bouncer = bouncer_resp.text.strip().strip('```json').strip('```').strip()
             bouncer_data = json.loads(cleaned_bouncer)
-            
+
             if bouncer_data.get("action") == "REJECT":
                 logger.info(f"Bouncer rejected input: {bouncer_data.get('reason')}")
                 await msg.reply_text(f"Rejected: {bouncer_data.get('reason')}")
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
                 return
+
+            confidence = bouncer_data.get("confidence", 100)
+            if confidence < 60:
+                status = "Review"
+                logger.info(f"Bouncer flagged for review (confidence={confidence}): {bouncer_data.get('reason')}")
         except Exception as e:
             logger.error(f"Bouncer evaluation failed: {e}")
 
         await msg.reply_text("Processing ingestion...")
-        result = await asyncio.to_thread(ingest_thought, text)
-        await msg.reply_text(result)
+        result = await asyncio.to_thread(ingest_thought, text, status)
+        if status == "Review":
+            await msg.reply_text(f"Saved to Review queue (low confidence). {result}")
+        else:
+            await msg.reply_text(result)
     else:
         logger.info("Routing to Retrieval pipeline.")
         try:
@@ -327,10 +335,4 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE, handle_message))
     app.add_error_handler(error_handler)
     
-    while True:
-        try:
-            app.run_polling()
-            break
-        except Exception as e:
-            logger.error(f"Startup network failure: {e}. Retrying in 15 seconds...")
-            time.sleep(15)
+    app.run_polling()

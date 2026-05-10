@@ -14,6 +14,7 @@ A natural language interface for capturing, structuring, and querying personal t
 - **Per-session conversation memory** — agent remembers the last 10 exchanges for multi-turn interactions
 - **Morning briefing** — daily digest sent to Telegram (combined) and email (Work and Home separately)
 - **Streamlit dashboard** — browser UI for bulk review, filtering, and inline editing
+- **Personal fact injection** — stable personal context (base facts + weekly auto-inferred facts) prepended to every Gemini prompt
 
 ## Architecture
 
@@ -50,6 +51,26 @@ Runs daily via cron. Queries Supabase for all `New` Tasks, Projects, and Admin i
 - **Telegram** — combined (Work + Home)
 - **Work email** — Work domain items only
 - **Home email** — Home domain items only
+
+### Personal Fact Injection
+
+Two fact files are prepended to every Gemini system prompt:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `facts/base_facts.md` | User (manual) | Stable personal context — identity, work domain, interests, skills |
+| `facts/inferred_facts.md` | Automation (weekly) | Facts extracted from the last 90 days of captured thoughts |
+
+`src/facts.py` loads and concatenates both files. Base facts always load first.
+
+`src/infer_facts.py` runs weekly via cron, queries Supabase for non-cancelled/non-done thoughts from the last 90 days, extracts stable generalizations via Gemini, and appends new facts (confidence ≥ 0.7) without removing existing ones.
+
+```bash
+# Runs weekly on Sunday at 5:50 AM (before the 6:00 AM briefing)
+50 5 * * 0 set -a; . $HOME/.third_brain.env; set +a; $HOME/.pyenv/versions/ml-env/bin/python $HOME/bin/third_brain/src/infer_facts.py >> $HOME/bin/third_brain/log/infer_facts.log 2>&1
+```
+
+Both fact files are excluded from redeploy overwrites — `deploy.sh` copies them only on first deploy.
 
 ### Dashboard
 
@@ -187,11 +208,14 @@ systemctl --user enable third_brain third_brain_dashboard
 systemctl --user start third_brain third_brain_dashboard
 ```
 
-### Morning Briefing (cron)
+### Cron Jobs
 
 ```bash
-# Runs daily at 6:00 AM
+# Morning briefing — daily at 6:00 AM
 0 6 * * * set -a; . $HOME/.third_brain.env; set +a; $HOME/.pyenv/versions/ml-env/bin/python $HOME/bin/third_brain/src/briefing.py >> $HOME/bin/third_brain/log/briefing.log 2>&1
+
+# Fact inference — weekly on Sunday at 5:50 AM (before briefing)
+50 5 * * 0 set -a; . $HOME/.third_brain.env; set +a; $HOME/.pyenv/versions/ml-env/bin/python $HOME/bin/third_brain/src/infer_facts.py >> $HOME/bin/third_brain/log/infer_facts.log 2>&1
 ```
 
 ## Usage Examples

@@ -18,6 +18,17 @@ elif [ -f "$DEST/config.json" ]; then
     echo "config.json already exists in PRD. Skipping overwrite to preserve PROD settings."
 fi
 
+mkdir -p "$DEST/facts"
+for fact_file in "$SRC/facts/"*.md; do
+    fname="$(basename "$fact_file")"
+    if [ ! -f "$DEST/facts/$fname" ]; then
+        cp "$fact_file" "$DEST/facts/$fname"
+        echo "Initial $fname copied to PRD."
+    else
+        echo "$fname already exists in PRD. Skipping to preserve live data."
+    fi
+done
+
 echo "Restarting Third Brain service..."
 systemctl --user restart third_brain
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.8.0] - 2026-05-09
+
+### Added
+- Personal fact injection system — stable context prepended to every Gemini system prompt
+- `facts/base_facts.md` — manually maintained file for identity, work domain, interests, and skills; never overwritten by automation
+- `facts/inferred_facts.md` — auto-generated weekly from the last 90 days of captured thoughts; facts only accumulate, never removed
+- `src/facts.py` — `load_facts()` utility that concatenates both fact files (base first)
+- `src/infer_facts.py` — weekly cron job: queries Supabase, extracts stable personal facts via Gemini, appends new entries with confidence ≥ 0.7
+- Facts injected into all four Gemini prompts: retrieval agent system instruction, morning briefing, bouncer, and metadata extractor
+- `deploy.sh` copies fact files to PRD only on first deploy — live personal data is never overwritten on redeploy
+- Weekly cron at 5:50 AM Sunday (before the 6:00 AM briefing) for `infer_facts.py`
+
 ## [1.7.0] - 2026-05-08
 
 ### Added

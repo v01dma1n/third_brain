@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from google import genai
 from telegram import Bot
+from facts import load_facts
 
 __version__ = "1.1.0"
 
@@ -112,8 +113,11 @@ async def create_briefing_content(rows: list, domain_label: str = "all") -> str:
     domain_context = f"({domain_label} tasks)" if domain_label != "all" else "(all tasks)"
     data_text = "\n".join(data_list)
 
+    facts_context = load_facts()
+    facts_section = (facts_context + "\n\n") if facts_context else ""
+
     prompt = f"""
-    You are an executive assistant.
+    {facts_section}You are an executive assistant.
     TODAY IS: {today_str}
 
     Here are the user's active tasks {domain_context} filtered to overdue, due this week, or backlog:

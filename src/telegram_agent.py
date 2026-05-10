@@ -11,6 +11,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from facts import load_facts
 
 __version__ = "1.7.0"
 
@@ -201,8 +202,10 @@ AGENT_TOOLS = [search_thoughts, list_thoughts, update_thought]
 
 def build_agent_config() -> types.GenerateContentConfig:
     today = datetime.date.today().isoformat()
+    facts_context = load_facts()
+    facts_section = (facts_context + "\n\n") if facts_context else ""
     system_instruction = f"""
-You are the Third Brain retrieval agent.
+{facts_section}You are the Third Brain retrieval agent.
 Use your tools to query the Supabase database to answer user questions.
 TODAY IS: {today}
 
@@ -228,11 +231,14 @@ GENERAL:
 def extract_metadata(text: str) -> dict:
     today = datetime.date.today()
     next_week = today + datetime.timedelta(days=7)
-    
+
     domain_keys = "|".join(domain_config.keys())
     domain_rules = "\n    ".join([f"- Map items mentioning {', '.join(keywords)} to '{domain}'." for domain, keywords in domain_config.items() if keywords])
-    
-    prompt = f"""Extract metadata for the following text.
+
+    facts_context = load_facts()
+    facts_section = (facts_context + "\n\n") if facts_context else ""
+
+    prompt = f"""{facts_section}Extract metadata for the following text.
     TODAY IS: {today.isoformat()}
     
     Return ONLY a valid JSON object with this exact schema:
@@ -344,7 +350,10 @@ Message: '{text}'"""
     if "INGESTION" in intent:
         logger.info("Routing to Ingestion pipeline.")
         
-        bouncer_prompt = f"""Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact (e.g., related to {', '.join(domain_config.keys())}).
+        facts_context = load_facts()
+        facts_section = (facts_context + "\n\n") if facts_context else ""
+
+        bouncer_prompt = f"""{facts_section}Evaluate if the following text is a concrete task, actionable idea, or valuable technical fact (e.g., related to {', '.join(domain_config.keys())}).
         Return ONLY a valid JSON object with this exact schema:
         {{"action": "ACCEPT" | "REJECT", "confidence": <integer 0-100>, "reason": "Brief explanation if rejected or uncertain, empty string if clearly accepted"}}
 

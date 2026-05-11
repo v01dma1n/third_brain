@@ -281,19 +281,27 @@ def ingest_thought(text: str, status: str = "New") -> str:
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal"
+        "Prefer": "return=representation"
     }
-    
+
     payload = {
         "content": text,
         "metadata": metadata,
         "embedding": embedding
     }
-    
+
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        return f"Saved successfully. Domain: {metadata.get('domain')}, Type: {metadata.get('type')}"
+        row = response.json()[0]
+        seq_id = row.get("seq_id", "?")
+        target_date = metadata.get("target_date") or "no date"
+        topics = metadata.get("topics", [])
+        topic_str = ", ".join(topics) if topics else text[:60]
+        return (
+            f"Saved #{seq_id} · {metadata.get('domain')} / {metadata.get('type')} · "
+            f"Due {target_date} · {topic_str}"
+        )
     except requests.exceptions.RequestException as e:
         logger.error(f"Database insertion failed: {e}")
         return "Database insertion failed."

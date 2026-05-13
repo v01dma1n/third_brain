@@ -133,6 +133,7 @@ async def create_briefing_content(rows: list, domain_label: str = "all") -> str:
     2. **Priorities:** Pick the top 3 most important items (focus on Overdue or Due Today).
     3. **Grouping:** Group the rest logically (e.g., "📅 Coming Up", "📥 Backlog").
     4. **Style:** Punchy, motivational, use emojis. No markdown headers like '##'.
+    5. **Item IDs:** Every item must include its #N identifier (e.g. #7) so the user can reference it later.
     """
 
     response = await client.aio.models.generate_content(

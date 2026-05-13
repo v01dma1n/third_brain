@@ -12,7 +12,7 @@ A natural language interface for capturing, structuring, and querying personal t
 - **Autonomous retrieval agent** — tool-calling LLM answers questions and updates tasks in natural language
 - **Human-friendly task IDs** — every thought gets a `#seq_id` (e.g. `#7`) for easy reference
 - **Per-session conversation memory** — agent remembers the last 10 exchanges for multi-turn interactions
-- **Morning briefing** — daily digest sent to Telegram (combined) and email (Work and Home separately)
+- **Morning briefing** — daily digest sent to Telegram (combined) and email (Work and Home separately); trigger on demand with `/brief`
 - **Streamlit dashboard** — browser UI for bulk review, filtering, and inline editing
 - **Personal fact injection** — stable personal context (base facts + weekly auto-inferred facts) prepended to every Gemini prompt
 
@@ -40,7 +40,7 @@ An autonomous LLM agent with access to three tools:
 |---|---|
 | `search_thoughts(query)` | Semantic vector search via Supabase `pgvector` |
 | `list_thoughts(limit, status)` | Chronological listing with optional status filter |
-| `update_thought(seq_id, new_status, new_target_date)` | Update status and/or target date by `#seq_id` |
+| `update_thought(seq_id, new_status, new_target_date, new_domain)` | Update status, target date, and/or domain by `#seq_id` — all fields optional |
 
 Per-session conversation history (last 10 turns, 1-hour TTL) is passed on each request so multi-turn references like "mark the second one as done" work correctly.
 
@@ -240,8 +240,13 @@ systemctl --user start third_brain third_brain_dashboard
 "What did I decide about the Magento caching issue?"
 "Change the date on task #7 to next Monday"
 "Mark #12 as done"
+"Move #5 to Work"
 "Show me items in Review"
 ```
+
+### On-demand Briefing
+
+Send `/brief` to the bot to trigger the full morning briefing immediately — Telegram digest plus domain-split emails.
 
 ### Dashboard
 

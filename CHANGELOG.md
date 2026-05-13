@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.9.0] - 2026-05-13
+
+### Added
+- `/brief` Telegram command — triggers the full morning briefing (Telegram + domain-split emails) on demand, running `briefing.py` as a subprocess
+- `update_thought` now accepts `new_domain` — allows reassigning a task between Work and Home via natural language (e.g. "move #7 to Work")
+- Agent system instruction updated to advertise `new_domain` alongside `new_status` and `new_target_date`
+
+### Fixed
+- Morning briefing query now selects `seq_id` — previously only `id` was fetched so `#N` tags were absent from items passed to Gemini
+- Gemini briefing prompt now includes an explicit rule to include `#N` on every item in the output
+
 ## [1.8.0] - 2026-05-09
 
 ### Added

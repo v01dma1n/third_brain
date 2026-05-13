@@ -156,8 +156,8 @@ def list_thoughts(limit: int = 12, status: str = None) -> dict:
         logger.error(f"list_thoughts failed: {e}")
         return {"error": str(e)}
 
-def update_thought(seq_id: int, new_status: str = None, new_target_date: str = None) -> dict:
-    """Update status and/or target_date of a thought by its #seq_id. new_target_date must be YYYY-MM-DD."""
+def update_thought(seq_id: int, new_status: str = None, new_target_date: str = None, new_domain: str = None) -> dict:
+    """Update status, target_date, and/or domain of a thought by its #seq_id. new_target_date must be YYYY-MM-DD. new_domain must be one of the configured domains (e.g. Work, Home)."""
     thought_id = _uuid_from_seq_id(seq_id)
     if not thought_id:
         return {"error": f"No thought found with #id {seq_id}."}
@@ -184,9 +184,12 @@ def update_thought(seq_id: int, new_status: str = None, new_target_date: str = N
         if new_target_date is not None:
             metadata["target_date"] = new_target_date
             updated_fields.append(f"target_date → {new_target_date}")
+        if new_domain is not None:
+            metadata["domain"] = new_domain
+            updated_fields.append(f"domain → {new_domain}")
 
         if not updated_fields:
-            return {"error": "No fields to update. Provide new_status and/or new_target_date."}
+            return {"error": "No fields to update. Provide new_status, new_target_date, and/or new_domain."}
 
         patch_url = f"{SUPABASE_URL}/rest/v1/thoughts?id=eq.{thought_id}"
         patch_headers = {**headers, "Content-Type": "application/json"}
@@ -212,7 +215,7 @@ TODAY IS: {today}
 UPDATING TASKS:
 - Every thought has a human-friendly #seq_id (e.g. #7, #42) shown in all list and search results.
 - To update a thought, call update_thought(seq_id=<number>, ...). Always use seq_id, never UUIDs.
-- update_thought accepts new_status (e.g. 'Done', 'New', 'Review') and/or new_target_date (YYYY-MM-DD).
+- update_thought accepts new_status (e.g. 'Done', 'New', 'Review'), new_target_date (YYYY-MM-DD), and/or new_domain (e.g. 'Work', 'Home').
 - If the user says "last task" or "most recent", use list_thoughts(limit=1) to find its seq_id.
 - If the user says "task #7" or "number 7", use seq_id=7 directly — no lookup needed.
 - Convert natural language dates (e.g. "next Monday", "end of month") to YYYY-MM-DD before calling update_thought.

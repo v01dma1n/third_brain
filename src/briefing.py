@@ -74,7 +74,7 @@ def get_open_items():
 
     url = f"{SUPABASE_URL}/rest/v1/thoughts"
     params = {
-        "select": "id,content,metadata",
+        "select": "seq_id,content,metadata",
         "metadata->>status": "eq.New",
         "metadata->>type": "in.(Task,Project,Admin)",
         "or": f"(metadata->>target_date.is.null,metadata->>target_date.lte.{limit_date_str})"
@@ -108,7 +108,9 @@ async def create_briefing_content(rows: list, domain_label: str = "all") -> str:
             t_date = next_week_str
         date_info = f"[Target: {t_date}]" if t_date else "[No Date]"
         summary = row.get("content", "").split("\n")[0][:100]
-        data_list.append(f"- {date_info} {type_}: {summary}")
+        seq_id = row.get("seq_id")
+        seq_tag = f"[#{seq_id}] " if seq_id else ""
+        data_list.append(f"- {seq_tag}{date_info} {type_}: {summary}")
 
     domain_context = f"({domain_label} tasks)" if domain_label != "all" else "(all tasks)"
     data_text = "\n".join(data_list)

@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from facts import load_facts
 
 __version__ = "1.7.0"
@@ -420,6 +420,23 @@ Message: '{text}'"""
     if file_path and os.path.exists(file_path):
         os.remove(file_path)
 
+async def brief_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text("Generating briefing...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            os.path.join(BASE_DIR, "briefing.py"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error(f"Briefing subprocess failed: {stderr.decode()}")
+            await update.effective_message.reply_text("Briefing failed. Check logs.")
+    except Exception as e:
+        logger.error(f"brief_command error: {e}")
+        await update.effective_message.reply_text("Failed to trigger briefing.")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Agent encountered an error: {context.error}")
     if update and hasattr(update, "effective_message") and update.effective_message:
@@ -439,6 +456,7 @@ if __name__ == "__main__":
         .build()
     )
     
+    app.add_handler(CommandHandler("brief", brief_command))
     app.add_handler(MessageHandler(filters.TEXT | filters.VOICE, handle_message))
     app.add_error_handler(error_handler)
     

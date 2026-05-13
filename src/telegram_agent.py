@@ -137,7 +137,7 @@ def search_thoughts(query_text: str) -> dict:
         logger.error(f"search_thoughts failed: {e}")
         return {"error": str(e)}
 
-def list_thoughts(limit: int = 12, status: str = None) -> dict:
+def list_thoughts(limit: int = 12, status: str | None = None) -> dict:
     url = f"{SUPABASE_URL}/rest/v1/thoughts?select=seq_id,content,metadata&order=created_at.desc&limit={limit}"
     
     if status:
@@ -156,8 +156,8 @@ def list_thoughts(limit: int = 12, status: str = None) -> dict:
         logger.error(f"list_thoughts failed: {e}")
         return {"error": str(e)}
 
-def update_thought(seq_id: int, new_status: str = None, new_target_date: str = None, new_domain: str = None) -> dict:
-    """Update status, target_date, and/or domain of a thought by its #seq_id. new_target_date must be YYYY-MM-DD. new_domain must be one of the configured domains (e.g. Work, Home)."""
+def update_thought(seq_id: int, new_status: str | None = None, new_target_date: str | None = None, new_domain: str | None = None) -> dict:
+    """Update one or more fields of a thought by its #seq_id. All fields except seq_id are optional — provide only the ones to change. new_target_date must be YYYY-MM-DD. new_domain must be one of the configured domains (e.g. Work, Home)."""
     thought_id = _uuid_from_seq_id(seq_id)
     if not thought_id:
         return {"error": f"No thought found with #id {seq_id}."}

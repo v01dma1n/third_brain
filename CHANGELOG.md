@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.9.1] - 2026-05-13
+
+### Fixed
+- `update_thought` optional parameters (`new_status`, `new_target_date`, `new_domain`) now use `str | None` type hints so the Gemini SDK correctly marks them as optional in the generated tool schema — previously the agent required all three when updating any single field
+- Same fix applied to `list_thoughts` `status` parameter
+
 ## [1.9.0] - 2026-05-13
 
 ### Added

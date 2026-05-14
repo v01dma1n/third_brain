@@ -1,40 +1,21 @@
 #!/bin/bash
 
-# Resolve the project root by going one directory up from where this script lives
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SRC="$(dirname "$SCRIPT_DIR")"
-DEST="$HOME/bin/third_brain"
+REMOTE="tao14"
+REMOTE_DEST="$REMOTE:~/bin/third_brain"
+REMOTE_PYTHON="~/.pyenv/versions/ml-env/bin/python"
 
-echo "Deploying code from DEV to PRD..."
+echo "Deploying src/ to $REMOTE..."
 
-mkdir -p "$DEST/src"
+rsync -av "$SRC/src/" "$REMOTE_DEST/src/"
 
-cp "$SRC/src/"*.py "$DEST/src/"
-
-if [ -f "$SRC/config.json" ] && [ ! -f "$DEST/config.json" ]; then
-    cp "$SRC/config.json" "$DEST/"
-    echo "Initial config.json copied to PRD."
-elif [ -f "$DEST/config.json" ]; then
-    echo "config.json already exists in PRD. Skipping overwrite to preserve PROD settings."
-fi
-
-mkdir -p "$DEST/facts"
-for fact_file in "$SRC/facts/"*.md; do
-    fname="$(basename "$fact_file")"
-    if [ ! -f "$DEST/facts/$fname" ]; then
-        cp "$fact_file" "$DEST/facts/$fname"
-        echo "Initial $fname copied to PRD."
-    else
-        echo "$fname already exists in PRD. Skipping to preserve live data."
-    fi
-done
-
-echo "Restarting Third Brain service..."
-systemctl --user restart third_brain
+echo "Restarting Third Brain service on $REMOTE..."
+ssh "$REMOTE" "systemctl --user restart third_brain"
 
 if [ $? -eq 0 ]; then
     echo "Deployment successful."
 else
-    echo "Service restart failed. Check logs:"
-    echo "journalctl --user -u third_brain -n 20"
+    echo "Service restart failed. Check logs on $REMOTE:"
+    echo "  ssh $REMOTE 'journalctl --user -u third_brain -n 20'"
 fi
